@@ -1,0 +1,52 @@
+--This is a simple TSQL to capture a failed job inside the SQL Server and send an email to the support team.
+--The alert will keep on sending as per the schedule job as long as there is an error.
+
+BEGIN
+
+	DECLARE @email_profile NVARCHAR(256) = (select name from msdb.dbo.sysmail_profile where profile_id=(select * from msdb.dbo.sysmail_principalprofile where is_default=1) );
+	DECLARE @emailrecipients NVARCHAR(300) = (SELECT so.email_address FROM msdb.dbo.sysoperators AS so WHERE so.[name] = 'DBAOPS');
+	DECLARE @subject NVARCHAR(500) = 'A monitoring job';
+	DECLARE @tableHTML NVARCHAR(500) = 'Null';
+		
+    SELECT
+    j.name,
+    j.job_id,
+    jh.step_id,
+    jh.step_name,
+    jh.run_status,
+    CASE jh.run_status
+        WHEN 0 THEN 'Failed'
+        WHEN 1 THEN 'Succeeded'
+        WHEN 2 THEN 'Retry'
+        WHEN 3 THEN 'Canceled'
+        WHEN 4 THEN 'Running'
+        ELSE 'Unknown'
+    END AS run_statusstring,
+    j.enabled,
+    jh.message,
+    msdb.dbo.agent_datetime(
+    CASE WHEN jh.run_date = 0 THEN NULL ELSE jh.run_date END,
+    CASE WHEN jh.run_time = 0 THEN NULL ELSE jh.run_time END) AS last_runtime
+	FROM msdb.dbo.sysjobhistory jh
+	INNER JOIN (
+		SELECT DISTINCT jh.job_id, MAX(jh.instance_id) instance_id
+		FROM msdb.dbo.sysjobhistory jh
+		WHERE jh.step_id != 0
+		GROUP BY jh.job_id
+	) AS a
+	ON jh.job_id = a.job_id
+		AND a.instance_id = jh.instance_id
+	INNER JOIN msdb.dbo.sysjobs AS j
+	ON jh.job_id = j.job_id
+	where jh.run_status = 0
+	and j.enabled=1;
+	
+	DECLARE @RESULTS = @@ROWCOUNT;
+	
+    IF @RESULTS > 0
+	EXEC msdb.dbo.sp_send_dbmail @profile_name = @email_profile
+		,@recipients = @emailrecipients
+		,@subject = @subject
+		,@body = @tableHTML
+		,@body_format = 'HTML'
+END
